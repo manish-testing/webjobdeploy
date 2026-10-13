@@ -1,0 +1,92 @@
+name: deploy test webjob
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.12'
+  # SCM (Kudu) host of the target Azure App Service, copy it from the portal:
+  # Web App -> Advanced Tools -> Go (the URL that opens), e.g. myapp-abc123.scm.centralus-01.azurewebsites.net
+  SCM_HOST: manishwebjob-gah4babcdqbsazcp.southeastasia-01.azurewebsites.net
+  # Name of the triggered WebJob inside the App Service
+  WEBJOB_NAME: Test-WebJob-01
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Only the files the WebJob needs go into the zip (no .git, .github, caches).
+      # Dependencies are installed INTO the package, because Azure does not
+      # pip install anything for a WebJob.
+      - name: Package WebJob contents
+        run: |
+          mkdir package
+          cp run.py run.sh settings.job package/
+          pip install -r requirements.txt --target package/.python_packages
+          chmod +x package/run.sh
+          cd package
+          zip -r ../webjob.zip .
+
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-webjob
+          path: webjob.zip
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: 'Production'
+    env:
+      KUDU_USERNAME: ${{ secrets.KUDU_USERNAME }}
+      KUDU_PASSWORD: ${{ secrets.KUDU_PASSWORD }}
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: python-webjob
+
+      # Kudu's scoped Zip API only replaces files under this WebJob's folder,
+      # the rest of wwwroot (and any co-hosted web app) is left untouched.
+      - name: Deploy to WebJob folder (Kudu scoped zip extract)
+        run: |
+          curl -fSL -X PUT \
+            -u "$KUDU_USERNAME:$KUDU_PASSWORD" \
+            --data-binary @webjob.zip \
+            "https://${SCM_HOST}/api/zip/site/wwwroot/app_data/jobs/triggered/${WEBJOB_NAME}/"
+
+      - name: Verify the WebJob is registered
+        run: |
+          curl -fsS -u "$KUDU_USERNAME:$KUDU_PASSWORD" \
+            "https://${SCM_HOST}/api/triggeredwebjobs/${WEBJOB_NAME}" | jq '{name, type, url, schedule: .settings.schedule}'
+
+      # Test only: run the job once right now instead of waiting for the schedule,
+      # then print its output. Delete this step for a real deployment.
+      - name: Run the WebJob once and show its output
+        run: |
+          curl -fsS -X POST -u "$KUDU_USERNAME:$KUDU_PASSWORD" \
+            "https://${SCM_HOST}/api/triggeredwebjobs/${WEBJOB_NAME}/run"
+          for i in 1 2 3 4 5 6; do
+            sleep 10
+            curl -fsS -u "$KUDU_USERNAME:$KUDU_PASSWORD" \
+              "https://${SCM_HOST}/api/triggeredwebjobs/${WEBJOB_NAME}" > job.json
+            STATUS=$(jq -r '.latest_run.status // "NoRunYet"' job.json)
+            echo "Latest run status: $STATUS"
+            if [ "$STATUS" = "Success" ] || [ "$STATUS" = "Failed" ]; then break; fi
+          done
+          echo "---------- WebJob output ----------"
+          curl -fsS -u "$KUDU_USERNAME:$KUDU_PASSWORD" "$(jq -r '.latest_run.output_url' job.json)"
+          [ "$STATUS" = "Success" ]
