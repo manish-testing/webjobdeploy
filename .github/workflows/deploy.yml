@@ -10,7 +10,7 @@ env:
   PYTHON_VERSION: '3.12'
   # SCM (Kudu) host of the target Azure App Service, copy it from the portal:
   # Web App -> Advanced Tools -> Go (the URL that opens), e.g. myapp-abc123.scm.centralus-01.azurewebsites.net
-  SCM_HOST: manishwebjob-gah4babcdqbsazcp.southeastasia-01.azurewebsites.net
+  SCM_HOST: manishwebjob-gah4babcdqbsazcp.scm.southeastasia-01.azurewebsites.net
   # Name of the triggered WebJob inside the App Service
   WEBJOB_NAME: Test-WebJob-01
 
